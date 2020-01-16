@@ -1,0 +1,201 @@
+---
+title: "Movie Analysis"
+author: "Cavan Donohoe"
+date: "1/15/2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+cavandonohoe@gmail.com
+
+## Movies
+
+It's Oscar Season so let's take a little look at some historical movie data. I just learned how to Web Scrape so here is a little sample of easy web scraping to save yourself from mindless copying and pasting.
+
+### Libraries
+
+Here are the libraries needed to be run for this run.
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readxl)
+library(rvest)
+library(scales)
+```
+### Box Office
+
+#### Web Scraping
+
+First we have to grab the base url, then the for loop can get every single year after that. So the first year available is 1977 and the url would then become https://www.boxofficemojo.com/year/1977. We want to go all the way up to 2020. Unfortunately, this function needs to be updated every year to be looped for the latest year available. Please note that this is only US domestic box office.
+```{r }
+url = "https://www.boxofficemojo.com/year/"
+
+Box_Office.List = list()
+for (year in c(1977:2020)) {
+  url.year = paste(url, year, sep = "")
+  xml.version.year = read_html(url.year)
+  Box_Office.List[year-1976] = html_table(xml.version.year, header = TRUE)
+}
+
+Box_Office.Table = bind_rows(Box_Office.List, .id = "column_label")
+```
+
+Here's what our table looks like:
+
+```{r }
+as_tibble(Box_Office.Table)
+
+as_tibble(Box_Office.Table) %>% select(Release, `Total Gross`, Distributor)
+```
+#### Data Cleaning
+
+I want to know what year each movie came out, so let's cheat a little bit. The function I used earlier
+```{r eval=FALSE}
+Box_Office.Table = bind_rows(Box_Office.List, .id = "column_label")
+```
+made a column called "column_label" and that is essentially a year indicator, so let's adjust it.
+
+```{r }
+Box_Office.Table$Year = as.numeric(Box_Office.Table$column_label) + 1976
+as_tibble(Box_Office.Table) %>% select(Year, Release, `Total Gross`, Distributor)
+```
+
+
+Sometimes if a movie is released in December, it will still be in theaters in January. That will make it have two years in their Year column. So let's just look at the earliest year and assume that is the actual release year.
+
+```{r }
+Box_Office.Table_v2 = Box_Office.Table %>% group_by(Release, `Total Gross`, Distributor) %>% summarise(`Release Year` = min(Year, na.rm = TRUE)) %>% 
+  rename(Title = Release) %>% mutate(`Title Type` = "movie")
+Box_Office.Table_v2
+```
+
+### Rotten Tomatoes
+
+#### Web Scraping
+
+Let's take a look at the Rotten Tomatoes' "TomatoMeter":
+```{r }
+url_rt = "https://www.rottentomatoes.com/top/bestofrt/?year="
+
+Rotten_Tomatoes.List = list()
+for (year_rt in c(1950:2020)) {
+  url.year_rt = paste(url_rt, year_rt, sep = "")
+  xml.version.year_rt = read_html(url.year_rt)
+  Rotten_Tomatoes.List[[year_rt-1949]] = html_table(xml.version.year_rt, header = TRUE)[[3]]
+}
+
+Rotten_Tomatoes.Table = bind_rows(Rotten_Tomatoes.List, .id = "column_label")
+```
+
+There is a slight difference in the "html_table" function this time though. Rotten Tomatoes has a few tables on every single page they have, so I want the third table in each sheet for each year.
+
+
+#### Data Cleaning
+
+Rotten Tomatoes has years attached to their title, so let's extract that and change the title to not have that year anymore. Also, let's convert that percent to an actual number for the TomatoMeter.
+
+```{r }
+Rotten_Tomatoes.Table_v2 = as_tibble(Rotten_Tomatoes.Table) %>% mutate(Year = as.numeric(str_sub(Title, end=-2,start=-5)), 
+                                            TomatoMeter = as.numeric(sub("%","", RatingTomatometer))) %>%
+  mutate(Title = substr(Title, start = 1, stop=nchar(Title)-7))
+
+Rotten_Tomatoes.Table_v2 %>% select(Year, Title, RatingTomatometer, TomatoMeter, `No. of Reviews`)
+```
+
+### Joining Two Tables
+
+I am going to join both the Box office and Rotten Tomato tables. Rememeber how we made the Rotten Tomatoes percentage into an actual number? I'm going to do the same thing with the Box Office Gross by getting rid of the dollar sign ($) and commas (,).
+```{r }
+Rotten_Tomatoes.Box_Office = Rotten_Tomatoes.Table_v2 %>% inner_join(Box_Office.Table_v2 %>% ungroup() %>% mutate(Year = `Release Year`)) %>% 
+  select(-column_label, - Rank, -`Release Year`) %>% mutate(`Total Gross Number` = as.numeric(gsub('[$,]', "", `Total Gross`)))
+Rotten_Tomatoes.Box_Office
+```
+
+### Data Visualization
+
+Let's take a look at TomatoMeter vs Total Gross
+```{r }
+Rotten_Tomatoes.Box_Office %>% ggplot(aes(x=`Total Gross Number`, y=TomatoMeter)) + geom_point() + ggtitle("TomatoMeter vs Total Gross") + xlab("Total Gross") + scale_y_continuous(labels = function(TomatoMeter) paste0(TomatoMeter,"%")) + scale_x_continuous(labels = dollar)
+```
+
+### Grouping by Distributor
+
+I want to take a look at each distributor to see how much of a powerhouse Mickey is.
+
+```{r }
+RT.BO_Distributor = Rotten_Tomatoes.Box_Office %>% group_by(Distributor) %>% 
+  summarise(`Total Gross` = sum(`Total Gross Number`, na.rm = TRUE), `Average TomatoMeter` = mean(TomatoMeter, na.rm = TRUE), 
+            `Average Gross` = mean(`Total Gross Number`, na.rm = TRUE), `Median TomatoMeter` = median(TomatoMeter, na.rm = TRUE)) %>% 
+  arrange(desc(`Total Gross`))
+RT.BO_Distributor
+```
+
+It's interesting if we arrange by median TomatoMeter. 
+
+```{r }
+RT.BO_Distributor %>% arrange(desc(`Median TomatoMeter`))
+```
+
+### Data Visualization and Analysis
+
+Even though Disney has made the most money overall (perhaps because of the mass amount of movies they have produced), they don't have the highest TomatoMeter rating. Let's see the Average and Median Gross and maybe that will have a stronger relation with the Median TomatoMeter.
+
+```{r }
+RT.BO_Distributor = Rotten_Tomatoes.Box_Office %>% group_by(Distributor) %>% 
+  summarise(`Total Gross` = sum(`Total Gross Number`, na.rm = TRUE), `Average TomatoMeter` = mean(TomatoMeter, na.rm = TRUE), 
+            `Average Gross` = mean(`Total Gross Number`, na.rm = TRUE), `Median TomatoMeter` = median(TomatoMeter, na.rm = TRUE),
+            `Median Gross` = median(`Total Gross Number`, na.rm = TRUE))
+RT.BO_Distributor
+
+
+# let's see the simple linear regression of this sample
+lm_1 = summary(lm(data=RT.BO_Distributor, `Median TomatoMeter` ~ `Median Gross`))
+lm_1
+
+RT.BO_Distributor %>% ggplot(aes(x=`Median Gross`, y=`Median TomatoMeter`)) + geom_point() + geom_smooth(method = "lm") +
+  annotate("text",x=10^8, y =95, hjust=.5,vjust=.5, 
+           label=paste("y = ",round(lm_1$coefficients[[1]],2),ifelse(lm_1$coefficients[[2]] < 0, " - "," + "),
+                                                                 abs(round(lm_1$coefficients[[2]],7)),"x, ",
+                                                                 "r^2 =",round(lm_1$r.squared,3),sep="")) + ggtitle("Median TomatoMeter vs Median Gross") +
+  scale_y_continuous(labels = function(TomatoMeter) paste0(TomatoMeter,"%")) + scale_x_continuous(labels = dollar, limits = c(0, 155000000))
+
+```
+
+So for the most part we cannot conclude the Median TomatoMeter has a linear relationship with Median Gross from a Distributor. So any of the top grossing distributors can either have highly rated movies or awful movies. 
+
+
+Let's take a look at the top 15 Total Gross Distributors and see what their TomatoMeters look like:
+```{r }
+# Total Gross and TomatoMeter for each Distributor
+RT.BO_Distributor %>% arrange(desc(`Total Gross`)) %>% slice(1:15) %>% ggplot() + 
+  geom_bar(aes(x=reorder(Distributor, `Total Gross`), y=`Total Gross`), stat = "identity") + 
+  geom_point(aes(x=Distributor, y=`Median TomatoMeter`*max(RT.BO_Distributor$`Total Gross`,na.rm = TRUE)/100), color="red") + 
+  scale_y_continuous(sec.axis = sec_axis((~./max(RT.BO_Distributor$`Total Gross`)),name="TomatoMeter", 
+                     labels= function(b) { paste(round(b*100,0),"%",sep="")}), labels=dollar) + 
+  theme(axis.text.x = element_text(angle=-90),axis.title.y.right = element_text(color="red"), axis.text.y.right = element_text(color="red")) +
+  ggtitle("Total Gross and Median TomatoMeter\nFor Each Distributor") + xlab("Distributor")
+```
+The TomatoMeters for each distributor again does not seem to have any relation to the Total Gross of these distributors. 
+
+```{r }
+# Average Gross and TomatoMeter for each Distributor
+RT.BO_Distributor %>% arrange(desc(`Average Gross`)) %>% slice(1:15) %>% ggplot() + 
+  geom_bar(aes(x=reorder(Distributor, `Average Gross`), y=`Average Gross`), stat = "identity") + 
+  geom_point(aes(x=Distributor, y=`Median TomatoMeter`*max(RT.BO_Distributor$`Average Gross`,na.rm = TRUE)/100), color="red") + 
+  scale_y_continuous(sec.axis = sec_axis((~./max(RT.BO_Distributor$`Average Gross`)),name="TomatoMeter", 
+                                         labels= function(b) { paste(round(b*100,0),"%",sep="")})) + 
+  theme(axis.text.x = element_text(angle=-90),axis.title.y.right = element_text(color="red"), axis.text.y.right = element_text(color="red")) +
+  ggtitle("Average Gross and Median TomatoMeter\nFor Each Distributor") + xlab("Distributor")
+```
+
+Thank you for going through my extracurricular stats project. Movies don't necessarily have to be great on Rotten Tomatoes to make a lot of money. More in-depth analysis can be made for these movies and their distributors and we can get a more clear picture of their movie making process and the risk they might be facing whenever they accept a script and want their movie to be successful. 
+
+Anyways, I hope you enjoyed some data cleaning and data analysis that I've learned by Googling for the past year at my company and applying this work as a non-traditional actuarial analyst. If you or anyone you know is hiring quantitative analysts or data analysts, please let me know.
+
+
+
+
+
+
+
